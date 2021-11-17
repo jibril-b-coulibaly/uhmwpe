@@ -5,9 +5,9 @@ J.S. Bergstrom and J.E. Bischoff, IJSCS Vol 2:1, 2010, pp. 31-39
 - Parts related to temperature are not implemented as omitted in the paper
 - Symmetric tensors stored as 3x3 and not Voigt for simple use of Python linalg
 
-Single material point
-Explicit integration (Linearized steps Bardet and Choucair)
-Finite differences Jacobian
+- Single material point under uniaxial tension/compression
+- Explicit forward difference integration
+- Finite differences Jacobian
 
 Developed using:
 - Python 2.7
@@ -16,6 +16,9 @@ Developed using:
 jibril.coulibaly at gmail.com
 
 all units SI
+
+TODO:
+- Space optimization using Voigt representation for symmetric tensors
 """
 
 import numpy as np
@@ -93,6 +96,10 @@ def computeFvdot(f, fe, sig, that, a, m):
     p = -ONETHIRD*np.trace(sig)
     t = np.linalg.norm(s)
     g = (t/(that + a*0.5*(p+np.abs(p))))**m
+    #if (g >= 1.0):
+    #    g = 1.0
+    #else:
+    #    g = g**m
     if (t <= 0):
         fvdot = np.zeros((3,3))
     else:
@@ -121,7 +128,7 @@ def tangent(sig_t, f_t, fvA_tplusdt, fvB_tplusdt,
             sig_tplusdt = computeStress(f_tplusdt, feA_tplusdt, feB_tplusdt,
                                         muA, muB_tplusdt, muC, k, q, lamL)
             # Compute element-wise stiffness Finite difference
-            dsig_dF[:,i+j] = (sig_tplusdt - sig_t).flatten()/(erate*dt)
+            dsig_dF[:,i*3+j] = (sig_tplusdt - sig_t).flatten()/(erate*dt)
     return dsig_dF
 
 ################################################################################
@@ -142,44 +149,90 @@ thatB = 20.1e6 # Flow resistance of network B, [Pa]
 muC = 10.0e6 # Shear modulus of network C, [Pa]
 q = 0.23 #Relatiive contribution of I2 of network C
 
-# Variables and initial values
+# Loading and data saving conditions, from command line
+erate = 0.007 # Engineering strain rate, [1/s]
+etrue = np.array([0.0, 1.25]) # List of values of true strain imposed loading, [-]
+eeng = np.exp(etrue) - 1.0 # Convert to engineering strain, [-]
+deeng = eeng[1:] - eeng[0:-1] # Variation of engineering strain on each path
+npath = len(deeng) # Number of distinct loading paths
+dt = 0.1 # Timestep (must meet CFL condition), [s]
+nsave = 100 # Number of steps to save on each loading path
 
 
+# int(sys.argv[11])
+
+# Variables, initial values and saved values
 sig = np.zeros((3,3)) # Total Cauchy stress
 sigA = np.zeros((3,3)) # Cauchy stress of network A
 sigB = np.zeros((3,3)) # Cauchy stress of network B
 muB = muBi # Shear modulus of network B
-
 f = np.copy(id33) # Total deformation gradient
 feA = np.copy(id33) # Elastic deformation gradient of network A
 fvA = np.copy(id33) # Viscoplastic deformation gradient of network A
 feB = np.copy(id33) # Elastic deformation gradient of network B
 fvB = np.copy(id33) # Viscoplastic deformation gradient of network B
+sig_save = np.zeros((npath*nsave,9)) # Cauchy stress, [Pa]
+sigA_save = np.zeros((npath*nsave,9)) # Cauchy stress, [Pa]
+f_save = np.zeros((npath*nsave,9)) # Deformation gradient, [-]
 
 
-# Loading conditions
-erate = 0.002 # Engineering strain rate, [1/s]
-dt = 1 # Timestep (must meet CFL condition), [s]
+for ipath in range(npath):
+    # Number of steps on loading path (rounded above)
+    nstep = np.ceil(deeng[ipath]/(erate*dt)).astype('int')
+    nevery = np.round(np.linspace(0,nstep,nsave))
+    for istep in range(nstep):
+        t = ipath*nstep + istep # Current timestep
+        flag = nevery == t
+        if (np.any(flag)):
+            idx = np.where(flag)[0][0]
+            sig_save[idx] = sig.flatten()
+            sigA_save[idx] = sigA.flatten()
+            f_save[idx] = f.flatten()
 
-# For loop of total time to write
+        # Explicit time-integration with Forward Euler difference
+        # All quantities known at time t
 
-# Data saving conditions
-nsave = 1 #, get from SANISAND and replicate
+        # Computation of viscoplastic deformation gradients at time t+dt
+        fvAdot, ga = computeFvdot(f, feA, sigA, thatA, a, mA)
+        fvA = fvA + fvAdot*dt
+        fvB = fvB + computeFvdot(f, feB, sigB, thatB, a, mB)[0]*dt
+        # Computation of the shear modulus of network B of at time t+dt
+        muB = muB -beta*(muB-muBf)*ga*dt
 
-# Explicit time-integration with Forward Euler difference
-# All quantities known at time t
+        # Computation of the tangent operator at time t
+        ds_df = tangent(sig, f, fvA, fvB, erate, dt, muA, muB, kap, q, lamL)
 
-# Computation of viscoplastic deformation gradients at time t+dt
-fvAdot, ga = computeFvdot(f, feA, sigA, thatA, a, mA)
-fvA += fvAdot*dt
-fvB += computeFvdot(f, feB, sigB, thatB, a, mB)[0]*dt
-# Computation of the shear modulus of network B of at time t+dt
-muB += -beta*(muB-muBf)*ga*dt
+        # Determination of the total deformation gradient at time t+dt
+        # The 9x9 tangent operator is singular since Cauchy stress is symmetric
+        # -> cannot solve with classical Newton-Raphson.
+        # Symmetry decreases to 6x9 which cannot be solved in general, i.e.,
+        # 6 equations for 9 variables -> solution not unique
+        ds_df69 = ds_df[[0,1,2,4,5,8],:] # Delete duplicate extradiagonal
+        # We must solve for a particular direction (directional derivative).
+        # We use a predictor - corrector method
+        # Predictor following the imposed deformation gradient F11 only
+        df_pre = np.array([erate*dt,0,0,0,0,0,0,0,0])
+        dsig_pre = np.dot(ds_df69, df_pre)
+        # Corrector in diagonal directions F22 and F33
+        dsig_cor = -sig.flatten()[[4,8]] - dsig_pre[[3,5]]
+        df_cor = np.linalg.solve(ds_df69[np.ix_([3,5],[4,8])], dsig_cor)
+        df = np.copy(df_pre) + np.array([0,0,0,0,df_cor[0],0,0,0,df_cor[1]])
 
-# Computation of the tangent operator at time t
-ds_df = tangent(sig, f, fvA, fvB, erate, dt, muA, muB, k, q, lamL)
+        f = f + df.reshape(3,3)
+        # Elastic deformation gradients at t+dt
+        feA = computeFe(f, fvA)
+        feB = computeFe(f, fvB)
+        # Computation of the stresses at time t+dt
+        sigA = computeStressAB(feA, muA, kap, lamL)
+        sigB = computeStressAB(feB, muB, kap, lamL)
+        sig = computeStress(f, feA, feB, muA, muB, muC, kap, q, lamL)
 
-# Determination of the total deformation gradient at time t+dt
-# This calculation is based on the loading conditions and
-# Linearized steps using the tangent stiffness, enforcing loading and boundary
-# conditions using the method of Bardet and Choucair ()
+# Save final state
+sig_save[-1] = sig.flatten()
+f_save[-1] = f.flatten()
+
+
+plt.plot(np.log(f_save[:,0]),sig_save[:,0]*1e-6,label="erate="+str(erate)+"/s")
+plt.xlabel("True strain, [-]")
+plt.ylabel("True stress, [MPa]")
+plt.legend()
