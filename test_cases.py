@@ -35,8 +35,8 @@ f_t35, sig_t35 = quick.main(0.035, np.array([0.0, 1.25]), dt, nsave)
 # - Engineering strain rate = 0.010 [1/s], true strain = -1 [-]
 f_c, sig_c = quick.main(0.010, np.array([0.0, -1.0]), dt, nsave)
 
-
 # Plot results
+plt.figure(1)
 plt.plot(np.log(f_t7[:,0]),sig_t7[:,0]*1e-6,label="Tension, erate=0.007/s")
 plt.plot(np.log(f_t18[:,0]),sig_t18[:,0]*1e-6,label="Tension, erate=0.018/s")
 plt.plot(np.log(f_t35[:,0]),sig_t35[:,0]*1e-6,label="Tension, erate=0.035/s")
@@ -67,6 +67,8 @@ f_ct5, sig_ct5 = quick.main(0.005, np.array([0,-0.42,-0.31]), dt, nsave)
 # - Engineering strain rate = 0.010 [1/s], true strain = [0,-0.42,-0.31] [-]
 f_ct10, sig_ct10 = quick.main(0.01, np.array([0,-0.42,-0.31]), dt, nsave)
 
+# Plot results
+plt.figure(2)
 plt.plot(np.log(f_tc2[:,0]),sig_tc2[:,0]*1e-6,label="erate=0.002/s")
 plt.plot(np.log(f_cyc5[:,0]),sig_cyc5[:,0]*1e-6,label="erate=0.005/s")
 plt.plot(np.log(f_ct2[:,0]),sig_ct2[:,0]*1e-6,label="erate=0.002/s")
